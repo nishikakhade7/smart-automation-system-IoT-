@@ -1,0 +1,11 @@
+# Local database (created automatically by the backend)
+classroom.db
+
+# Real Wi-Fi password and laptop IP - never commit this
+esp32/config.py
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+venv/
+.venv/

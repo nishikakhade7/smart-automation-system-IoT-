@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to alert_config.json (git-ignored) and fill in your values. Environment variables with the same names override this file.",
+  "SMS_PROVIDER": "twilio",
+  "SMS_TO": "+91XXXXXXXXXX",
+  "TWILIO_ACCOUNT_SID": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "TWILIO_AUTH_TOKEN": "paste-your-twilio-auth-token-here",
+  "TWILIO_FROM": "+1XXXXXXXXXX",
+  "_trial_note": "Optional, trial accounts only: TWILIO_TRIAL_TEMPLATE = one of sms_internal_alerts, sms_account_alerts, ... (Twilio predefined templates). Remove it after upgrading."
+}

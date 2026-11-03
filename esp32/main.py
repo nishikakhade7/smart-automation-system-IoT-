@@ -8,9 +8,11 @@
 # Needs MicroPython 1.20 or newer (for the "timeout" option of requests).
 # Settings (Wi-Fi, laptop IP, relay polarity) are in config.py.
 
+import math
 import time
 
 import dht
+import machine
 import network
 import ntptime
 from machine import ADC, Pin
@@ -29,8 +31,8 @@ PIN_LDR = 32            # ADC1 - ADC2 pins do not work while Wi-Fi is on
 PIN_RELAY_LIGHT = 25    # relay IN1
 PIN_RELAY_FAN = 33      # relay IN2
 PIN_RELAY_SPARE = (18, 19)  # relay IN3 / IN4, unused, kept OFF
-# GPIO34 (ACS712 current) and GPIO35 (ZMPT101B voltage) are NOT used
-# until mains is wired by a qualified person.
+PIN_ACS712 = 34         # ACS712 OUT through the 2.2k / 4.4k divider (ADC1, input only)
+PIN_ZMPT = 35           # ZMPT101B OUT (ADC1, input only) - mains voltage
 
 IST_OFFSET_S = 19800    # India = UTC + 5:30
 
@@ -99,23 +101,93 @@ def read_ldr():
 dht_sensor = dht.DHT11(Pin(PIN_DHT))   # DHT11, NOT DHT22
 temp = None
 hum = None
+dht_ok_at = None        # ticks of the last good DHT11 reading
 
 
 def read_dht():
     """Update temp/hum. On a failed read, keep the last good values."""
-    global temp, hum
+    global temp, hum, dht_ok_at
     try:
         dht_sensor.measure()
         temp = dht_sensor.temperature()
         hum = dht_sensor.humidity()
+        dht_ok_at = time.ticks_ms()
     except OSError:
         print("DHT11 read failed - keeping last value")
 
 
+def dht_fresh():
+    """True if the last good DHT11 reading is recent. Old values are not sent,
+    so the server can see that the sensor is failing (its fan rule needs that)."""
+    return dht_ok_at is not None and \
+        time.ticks_diff(time.ticks_ms(), dht_ok_at) < getattr(config, "DHT_STALE_S", 15) * 1000
+
+
 def fake_power_w():
-    # *** FAKE POWER ***  Not measured! Just the sum of constants for the
-    # relays that are ON. Real measurement needs ACS712/ZMPT101B on mains.
+    # *** ESTIMATED POWER *** (used when MEASURE_CURRENT is False): the sum of
+    # the rated watts of the relays that are ON.
     return (config.LIGHT_W if light_on else 0) + (config.FAN_W if fan_on else 0)
+
+
+# ACS712 current sensor (only when MEASURE_CURRENT = True in config.py)
+MEASURE_CURRENT = getattr(config, "MEASURE_CURRENT", False)
+if MEASURE_CURRENT:
+    acs_adc = ADC(Pin(PIN_ACS712))
+    acs_adc.atten(ADC.ATTN_11DB)    # 0-3.3 V range
+acs_offset_uv = 1667000             # first guess of the zero-current level (2.5 V x 0.667)
+
+
+def read_current_a():
+    """RMS current through the ACS712, measured over 100 ms (= 5 mains cycles at 50 Hz).
+    The zero-current level is learned from the samples themselves, so the ACS712's
+    drift does not matter. Readings below CURRENT_NOISE_A count as 0."""
+    global acs_offset_uv
+    n = 0
+    s = 0       # sum of (sample - offset)
+    s2 = 0      # sum of (sample - offset)^2 ; integers, so no rounding errors
+    start = time.ticks_ms()
+    while time.ticks_diff(time.ticks_ms(), start) < 100:
+        d = acs_adc.read_uv() - acs_offset_uv
+        n += 1
+        s += d
+        s2 += d * d
+    mean_d = s / n
+    acs_offset_uv += int(mean_d)                       # track the zero level for next time
+    var_uv2 = s2 / n - mean_d * mean_d
+    rms_v = math.sqrt(var_uv2) / 1e6 if var_uv2 > 0 else 0.0     # volts at GPIO34
+    amps = rms_v / config.ACS712_DIVIDER / (config.ACS712_MV_PER_A / 1000) * config.CURRENT_CAL
+    return 0.0 if amps < config.CURRENT_NOISE_A else amps
+
+
+# ZMPT101B voltage sensor (only when MEASURE_VOLTAGE = True in config.py)
+MEASURE_VOLTAGE = getattr(config, "MEASURE_VOLTAGE", False)
+if MEASURE_VOLTAGE:
+    zmpt_adc = ADC(Pin(PIN_ZMPT))
+    zmpt_adc.atten(ADC.ATTN_11DB)
+zmpt_offset_uv = 1650000             # first guess of the zero level (half of 3.3 V)
+
+
+def read_voltage():
+    """RMS mains voltage from the ZMPT101B over 100 ms (5 cycles at 50 Hz).
+    Returns (signal_mv, volts): signal_mv = RMS signal at GPIO35 in millivolts
+    (always sent, used for calibration); volts = signal x VOLTAGE_CAL, or None
+    while VOLTAGE_CAL is 0 (not calibrated yet)."""
+    global zmpt_offset_uv
+    n = s = s2 = 0
+    start = time.ticks_ms()
+    while time.ticks_diff(time.ticks_ms(), start) < 100:
+        d = zmpt_adc.read_uv() - zmpt_offset_uv
+        n += 1
+        s += d
+        s2 += d * d
+    mean_d = s / n
+    zmpt_offset_uv += int(mean_d)
+    var = s2 / n - mean_d * mean_d
+    signal_mv = math.sqrt(var) / 1000 if var > 0 else 0.0
+    if signal_mv < getattr(config, "VOLTAGE_NOISE_MV", 20):
+        signal_mv = 0.0                                   # no mains on the sensor
+    cal = getattr(config, "VOLTAGE_CAL", 0)
+    return signal_mv, (signal_mv / 1000 * cal if cal else None)
 
 
 # ---------- Wi-Fi ----------
@@ -223,6 +295,7 @@ def main():
     last_dht = None
     last_ntp = time.ticks_ms()
     last_wifi_try = time.ticks_ms()
+    last_wifi_ok = time.ticks_ms()      # when Wi-Fi was last connected
     last_backend_ok = time.ticks_ms()   # start counting from boot
     last_motion = None                  # ticks of the last PIR=1 (for the fail-safe)
     in_failsafe = False
@@ -231,15 +304,29 @@ def main():
         cycle_start = time.ticks_ms()
 
         # Wi-Fi lost? Start a reconnect in the background every 15 s
-        # (do not wait here, so the loop keeps running).
-        if not wlan.isconnected() and \
-                time.ticks_diff(cycle_start, last_wifi_try) > config.WIFI_TIMEOUT_S * 1000:
+        # (do not wait here, so the loop keeps running). Drop the old attempt
+        # first: after a long outage the Wi-Fi chip can get stuck "connecting".
+        if wlan.isconnected():
+            last_wifi_ok = cycle_start
+        elif time.ticks_diff(cycle_start, last_wifi_try) > config.WIFI_TIMEOUT_S * 1000:
             last_wifi_try = cycle_start
             print("Wi-Fi lost - reconnecting in background")
+            try:
+                wlan.disconnect()
+            except OSError:
+                pass
             try:
                 wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
             except OSError:
                 pass
+
+        # Still no Wi-Fi after WIFI_RESET_S: restart the board for a clean
+        # reconnect (relays start OFF at boot, the fail-safe takes over after).
+        if time.ticks_diff(cycle_start, last_wifi_ok) > getattr(config, "WIFI_RESET_S", 300) * 1000:
+            print(">>> No Wi-Fi for %d s - restarting the ESP32" % getattr(config, "WIFI_RESET_S", 300))
+            set_relays(False, False)
+            time.sleep_ms(200)
+            machine.reset()
 
         # Clock: re-sync every 3 h (or every minute until the first success)
         resync_ms = (config.NTP_RESYNC_S if time_synced else 60) * 1000
@@ -256,13 +343,26 @@ def main():
             last_dht = cycle_start
             read_dht()
 
+        # Power: measured with the ACS712, or estimated from the relay state
+        voltage_mv, voltage_v = read_voltage() if MEASURE_VOLTAGE else (None, None)
+        if MEASURE_CURRENT:
+            current_a = read_current_a()
+            # apparent power: measured voltage if calibrated, else the nominal mains voltage
+            power_w = (voltage_v if voltage_v else config.MAINS_V) * current_a
+        else:
+            current_a = None
+            power_w = fake_power_w()
+
         # Report and ask the backend
         cmd = None
         problem = "Wi-Fi not connected"
         if wlan.isconnected():
             try:
-                post_telemetry({"pir": pir, "ldr": ldr, "temp": temp, "hum": hum,
-                                "power_w": fake_power_w()})
+                fresh = dht_fresh()
+                post_telemetry({"pir": pir, "ldr": ldr,
+                                "temp": temp if fresh else None, "hum": hum if fresh else None,
+                                "power_w": power_w, "current_a": current_a,
+                                "voltage_v": voltage_v, "voltage_mv": voltage_mv})
                 cmd = get_command()
             except Exception as e:
                 problem = "backend unreachable (%s)" % e
@@ -289,10 +389,12 @@ def main():
                     problem, config.FALLBACK_AFTER_S - down_s)
 
         # One clear status line per cycle
-        print("%s IST | PIR=%d LDR=%4d T=%s H=%s | light=%s fan=%s | %s" % (
+        print("%s IST | PIR=%d LDR=%4d T=%s H=%s V=%s I=%s P=%dW | light=%s fan=%s | %s" % (
             ist_clock(), pir, ldr,
             "--" if temp is None else "%dC" % temp,
             "--" if hum is None else "%d%%" % hum,
+            "--" if voltage_mv is None else ("%dV" % voltage_v if voltage_v is not None else "%dmV(uncal)" % voltage_mv),
+            "--" if current_a is None else "%.2fA" % current_a, int(power_w),
             "ON " if light_on else "OFF", "ON " if fan_on else "OFF", reason))
 
         # Wait for the rest of the 2 s cycle

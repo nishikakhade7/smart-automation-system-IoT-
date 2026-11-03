@@ -39,6 +39,11 @@ ON  =  class scheduled now (from 5 min before start until the end)
   occupied for 10 minutes after the last motion.
 - Every command has a readable **reason**: `class scheduled and room occupied`,
   `class scheduled but no motion`, `no class scheduled`.
+- **Watchman switch:** the dashboard has one **ON/OFF** button. It shows the current
+  state; pressing it flips the output (both relays) manually. Pressing it again
+  returns to automatic. A manual state also ends by itself after
+  `OVERRIDE_MIN = 60` minutes, so nothing stays on by mistake. The reason then reads
+  e.g. `watchman override: ON until 14:05 (auto: no class scheduled)`.
 - The ESP32 makes **no decisions** - except the **fail-safe**: if the backend is
   unreachable for 20 s it switches to PIR-only mode (light on for 5 min after the
   last motion, fan off) and returns to normal automatically when the backend answers.
@@ -60,7 +65,9 @@ classroom-automation/
 │   ├── classroom.db          created automatically (git-ignored)
 │   ├── tools/fake_esp.py     pretends to be the ESP32
 │   ├── tools/add_test_slot.py  adds/removes a TEST class at the current time
-│   ├── tests/test_logic.py   16 unit tests
+│   ├── alerts.py             SMS alerts (background thread, never blocks)
+│   ├── alert_config.example.json  template for alert_config.json (git-ignored)
+│   ├── tests/               91 unit tests (test_logic.py, test_features.py)
 │   ├── templates/dashboard.html
 │   └── static/dashboard.js
 ├── esp32/                    copied to the board with Thonny
@@ -82,6 +89,11 @@ classroom-automation/
 | GET | `/api/status` | dashboard | latest reading, command, current/next class, ESP online |
 | GET | `/api/consumption` | dashboard | today's kWh + recent power samples |
 | GET | `/api/timetable` | dashboard | all slots |
+| GET | `/api/sms-log` | dashboard | last 10 SMS attempts with Twilio status |
+| POST | `/api/sms-refresh` | dashboard | re-check delivery status of recent SMS |
+| POST | `/api/toggle` | dashboard ON/OFF button | flips the output; second press = automatic |
+| POST | `/api/test-alert` (or `/test-alert`) | dashboard "Send test SMS" | sends a test SMS in the background |
+| POST | `/api/override` | (advanced) | `{device: light/fan, mode: on/off/auto}` |
 | GET | `/` | browser | the dashboard |
 
 ---
@@ -105,7 +117,7 @@ cd backend
 ..\venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Expected: `Ran 16 tests ... OK`.
+Expected: `Ran 91 tests ... OK`.
 
 > All commands below are run from `classroom-automation\backend` and always start
 > with `..\venv\Scripts\python.exe`. Typing just `tools\add_test_slot.py` does **not** work.
@@ -208,7 +220,7 @@ needed to upload files or watch the output.
 | `FALLBACK_AFTER_S` | 20 | backend silence before fail-safe |
 | `FALLBACK_HOLD_S` | 300 | fail-safe: light on this long after motion |
 
-Backend settings are in `backend/logic.py`: `LEAD_MIN = 5`, `HOLD_MIN = 10`.
+Backend settings are in `backend/logic.py`: `LEAD_MIN = 5`, `HOLD_MIN = 10`, `OVERRIDE_MIN = 60`.
 Restart Flask after changing them.
 
 ## 5. Run
@@ -239,6 +251,121 @@ on any phone on the same Wi-Fi. (Needs internet for the Tailwind and Chart.js CD
 
 > Keep Flask running whenever the ESP32 is on. Without Flask, the ESP32 goes into
 > fail-safe after 20 s and the light follows motion only.
+
+---
+
+## 6. Fan by temperature, daylight saving, SMS alerts
+
+All three run on the laptop (`backend/logic.py`, `backend/app.py`); the ESP32 only
+sends readings. Settings are constants at the top of the sections in `logic.py`
+(restart Flask after changing them).
+
+### Fan by temperature (DHT11)
+
+The fan needs **class + occupied** (as before) **and** a warm room:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `FAN_ON_C` | 28 | fan turns ON at 28 °C or more |
+| `FAN_OFF_C` | 27 | ...and stays ON until it is **below** 27 °C (hysteresis, no relay chatter) |
+| `TEMP_FRESH_S` / `TEMP_GRACE_S` | 15 / 60 | no valid reading for 15 s: keep the previous fan state; for 60 s: fan OFF |
+
+Readings outside 0-50 °C (the DHT11 range) count as invalid. The reason says what
+happened, e.g. `fan on: 29.5 C >= 28 C`, `fan off: 24.0 C is below 28 C`,
+`fan off: no valid temperature reading for over 60 s`.
+
+### Daylight saving (LDR)
+
+If it is bright enough, the **light** stays OFF (`light off: enough daylight`);
+the fan keeps following its own rule. Two thresholds stop the bulb's own light
+from making it flicker: daylight starts **above `DAY_OFF`** and ends only **below
+`DAY_ON`**, and there are at least `DAY_MIN_INTERVAL_S` (60 s) between changes.
+
+#### LDR calibration (5 minutes, with the dashboard open)
+
+1. **Direction.** Watch "Light (LDR)" in the Sensors card. Cover the LDR with a
+   finger, then shine a phone torch on it.
+   - Number goes **up** with more light -> keep `LDR_HIGHER_IS_BRIGHTER = True`
+     (this is the case for 3.3 V -> LDR -> GPIO32 -> resistor -> GND).
+   - Number goes **down** -> set `LDR_HIGHER_IS_BRIGHTER = False`. The dashboard then
+     shows the turned-round value (4095 - raw) and marks it "[inverted LDR]".
+2. **Two readings** (use the brightness number the dashboard shows next to "Daylight: ... now"):
+   - **A** = room in normal daytime light with the bulb **OFF** (curtains open).
+   - **B** = evening / curtains closed with the bulb **ON**.
+3. **Thresholds.** Choose `DAY_OFF` a little **below A** and `DAY_ON` a little **above B**,
+   with a clear gap: e.g. A = 2900, B = 1300 -> `DAY_OFF = 2600`, `DAY_ON = 1700`.
+   If A and B are close together, move the LDR away from the bulb (towards the window).
+4. Restart Flask and check the Light card: "light off: enough daylight" in daylight,
+   "light on: ..." when it is dark.
+
+### SMS alerts to the watchman (Twilio)
+
+The server sends an SMS to the watchman's mobile when the **light has been ON for 20
+minutes with no class** (e.g. a manual switch-on that was forgotten):
+`Classroom 1: the class is cancelled but the lights have been on for 20 min. Please switch off the lights and fans.`
+(change the wording in `ALERT_TEXT` in `logic.py`) (`ALERT_AFTER_MIN = 20` in `logic.py`,
+real time).
+
+**How it works** (`backend/alerts.py`, official `twilio` Python SDK):
+
+- **One SMS per episode.** An episode starts when the light is first seen ON with no
+  class and ends when the light goes OFF. Each episode gets a row in the `sms_log`
+  table *before* sending; a unique index on the episode makes a second SMS for the same
+  episode impossible, however often the ESP32 or the dashboard polls.
+- **Never blocks control.** Sending runs in a background thread with a 10 s timeout.
+  No internet, wrong credentials or a Twilio refusal are logged and shown on the
+  dashboard; the light/fan decisions carry on.
+- **Accepted is not delivered.** Twilio first answers `queued` (accepted). The server
+  then asks Twilio for the real status after 5, 15, 30 and 60 s using the message SID:
+  `sent` -> `delivered`, or `undelivered` / `failed` with the error code and a readable
+  explanation. "Check delivery status" on the dashboard asks again later.
+- **Retries:** only after HTTP 429 (rate limit; Twilio did not accept the message, so
+  no duplicate is possible), at most 2 times with 1 s / 2 s backoff.
+- **Secrets** are never logged or sent to the browser; phone numbers are masked
+  (`+91******1038`) and the message SID is shortened.
+- **Delivery-status callbacks** (Twilio calling *us*) are not used: they need a public
+  HTTPS URL, which a laptop on a hotspot does not have. If the server is ever deployed
+  publicly, add a `StatusCallback` URL and validate each callback with
+  `twilio.request_validator.RequestValidator` (X-Twilio-Signature) - never trust an
+  unsigned status update.
+
+**Setup:**
+
+1. **Account:** sign up at twilio.com/try-twilio. Console home -> "Account Info" shows
+   the **Account SID** (`AC...`) and the **Auth Token** (click "show").
+2. **Sender:** the SMS-capable Twilio number shown as "From" in Console -> *Try out SMS*,
+   or Console -> Phone Numbers -> Manage -> Active numbers. Use E.164 format, `+1...`.
+3. **Recipient:** the watchman's number in E.164 format, e.g. `+91` + 10 digits. A trial
+   account can only send to **verified** numbers (Console -> Phone Numbers -> Verified
+   Caller IDs; your sign-up number is verified automatically; max 5).
+4. **India allowed:** Console -> Messaging -> Settings -> **Geo permissions** -> tick India.
+5. **Configure** without committing secrets: copy `backend/alert_config.example.json`
+   to `backend/alert_config.json` (git-ignored) and fill in `SMS_PROVIDER` (`"twilio"`),
+   `SMS_TO`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`. Or set environment
+   variables with the same names (they win over the file). Placeholder values count as
+   missing; the dashboard's SMS card lists exactly what is missing or invalid.
+6. **Install** the SDK once: `..\venv\Scripts\python.exe -m pip install -r requirements.txt`
+7. **Test:** restart Flask, press **Send test SMS** (max once per 30 s). The card shows
+   ⏳ queued/sent, then ✔ delivered or ✖ with the reason.
+8. **Real alert:** no class scheduled, press the Switch ON, wait 20 minutes -> exactly one
+   SMS; switch OFF and ON again for the next episode.
+9. **Diagnose:** Console -> Monitor -> Logs -> Messaging shows every message with its
+   status and error code (Twilio's error dictionary: twilio.com/docs/api/errors).
+
+**Trial account limits (important):**
+
+- A **trial account can only send Twilio's predefined templates, not custom text.** Our
+  alert text is refused with **error 572006** ("Invalid template name. Trial accounts can
+  only use predefined SMS templates") - the dashboard says so. To send the real alerts,
+  **upgrade the account** (add billing in the Console).
+- Trial: verified recipients only (max 5), about 50 messages per day, and a
+  "Sent from a Twilio trial account" prefix.
+- India: messages from an international number arrive from a random shared sender and
+  can still be filtered by Indian carriers (status `undelivered`, e.g. error 30007).
+  Upgrading removes the trial limits but **does not guarantee delivery**; always check the
+  status in the dashboard or the Twilio logs.
+
+The laptop needs **internet** for SMS (phone hotspot with mobile data on).
 
 ---
 
@@ -288,14 +415,13 @@ Optional extras: show `docs/test_log.md` (all bench tests passed) and run the un
 
 ## Tests
 
-- **Unit tests** (decision logic, next class, energy):
+- **Unit tests** (decision logic, next class, energy, fan/daylight hysteresis,
+  SMS alerts with a mocked provider, the Flask server on a temporary database):
   `..\venv\Scripts\python.exe -m unittest discover -s tests`
 - **Bench tests** with the real hardware: [docs/test_log.md](docs/test_log.md)
   (all 10 passed on 15-10-2026 and 21-10-2026).
 
 ## Not done yet (optional stages)
 
-- LDR daylight rule (skip the light when there is enough daylight).
-- DHT11 rule (fan only above a temperature threshold).
 - Real power measurement (ACS712 + ZMPT101B) and mains installation - **only with
   permission and a qualified electrician**.

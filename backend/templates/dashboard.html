@@ -1,178 +1,317 @@
 <!doctype html>
-<!-- dashboard.html - Single-page watchman dashboard (Tailwind CSS + Chart.js from CDN).
-     Served by Flask at "/". All live data is filled in by static/dashboard.js,
-     which polls the backend API every 2.5 s. -->
+<!-- dashboard.html - Smart Classroom Control Center (light theme).
+     Served by Flask at "/". Live data from /api/status every 2.5 s (static/dashboard.js);
+     analytics from /api/analytics only when that section is opened or the range changes. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Smart Classroom</title>
-  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    // apply a saved dark-mode choice before the page paints (light is the default)
+    try { if (localStorage.getItem("theme") === "dark") document.documentElement.dataset.theme = "dark"; } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <style>
-    /* Colour roles in one place (dark theme). */
-    :root {
-      color-scheme: dark;
-      --page:      #0d0d0d;
-      --card:      #1a1a19;
-      --border:    rgba(255, 255, 255, 0.10);
-      --text:      #f0efec;
-      --text-2:    #c3c2b7;
-      --muted:     #898781;
-      --grid:      #2c2c2a;
-      --series:    #3987e5;   /* power line */
-      --good:      #0ca30c;   /* ON / occupied / online */
-      --critical:  #d03b3b;   /* offline / server unreachable */
-      --neutral:   #383835;   /* OFF / empty */
-    }
-    body { background: var(--page); color: var(--text);
-           font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; }
-    .label { color: var(--muted); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
-    .text-2 { color: var(--text-2); }
-    .muted { color: var(--muted); }
-    .tabular { font-variant-numeric: tabular-nums; }
-
-    /* Status badge: colour + dot + word, so meaning never depends on colour alone */
-    .badge { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.9rem;
-             border-radius: 999px; font-weight: 700; font-size: 1.1rem; }
-    .badge::before { content: ""; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: currentColor; }
-    .badge-on   { background: rgba(12, 163, 12, 0.16); color: #4cd44c; }
-    .badge-off  { background: var(--neutral);          color: var(--text-2); }
-    .badge-bad  { background: rgba(208, 59, 59, 0.18); color: #f07a7a; }
-    .badge-info { background: rgba(57, 135, 229, 0.18); color: #86b6ef; }
-
-    .row-now  { background: rgba(57, 135, 229, 0.16); }
-    .row-today td:first-child { color: var(--text); font-weight: 600; }
-  </style>
 </head>
-<body class="min-h-screen">
-  <div class="max-w-6xl mx-auto px-4 py-6 space-y-4">
+<body>
+  <!-- Icons used on the page (inline SVG sprite) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-bulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></symbol>
+    <symbol id="i-fan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12c0-3 2.5-5.5 5.5-5.5S21 8 21 10c0 2-2 2-3 2h-6zM12 12c3 0 5.5 2.5 5.5 5.5S16 21 14 21c-2 0-2-2-2-3v-6zM12 12c0 3-2.5 5.5-5.5 5.5S3 16 3 14c0-2 2-2 3-2h6zM12 12c-3 0-5.5-2.5-5.5-5.5S8 3 10 3c2 0 2 2 2 3v6z"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10M8 5v8M16 5v8M4 10v4a8 8 0 0 0 16 0V8"/></symbol>
+    <symbol id="i-temp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.8V4a2 2 0 0 0-4 0v10.8a4 4 0 1 0 4 0z"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l3-8 4 16 3-8h7"/></symbol>
+    <symbol id="i-msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-wait" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18M7 15l4-4 3 3 5-6"/></symbol>
+  </svg>
 
-    <!-- Header -->
-    <header class="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 class="text-2xl font-bold">Smart Classroom</h1>
-        <p class="text-2 text-sm">Classroom 1 &middot; light and fan automation</p>
-      </div>
-      <div class="text-right">
-        <div id="clock" class="text-2xl font-semibold tabular">--:--:--</div>
-        <div id="date" class="muted text-sm">&nbsp;</div>
-      </div>
-    </header>
+  <div id="announce" class="sr-only" aria-live="polite"></div>
 
-    <!-- Shown only when the dashboard cannot reach Flask -->
-    <div id="server-banner" class="hidden card p-3" style="border-color: var(--critical);">
-      <span class="badge badge-bad">Server unreachable</span>
-      <span class="text-2 ml-2">The dashboard cannot reach the backend. Is app.py running?</span>
+  <header class="topbar">
+    <div class="wrap">
+      <div class="brand">
+        <div class="brand-mark"><svg width="22" height="22"><use href="#i-bulb"/></svg></div>
+        <div>
+          <h1>Smart Classroom Control Center</h1>
+          <p>Classroom 1 &middot; automatic light &amp; fan control</p>
+        </div>
+      </div>
+      <div class="top-right">
+        <span id="demo-badge" class="pill info" hidden><svg><use href="#i-clock"/></svg><span>Demo clock</span></span>
+        <span id="server-pill" class="pill off"><span class="dot"></span><span>Connecting&hellip;</span></span>
+        <button id="theme-btn" class="theme-btn" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+          <svg><use href="#i-moon"/></svg></button>
+        <div class="clock" aria-label="Server time">
+          <div id="clock" class="time tabular">--:--:--</div>
+          <div id="date" class="date">&nbsp;</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap" id="main">
+    <div id="banner" class="banner" role="alert">
+      <span>Server unreachable</span>
+      <span class="muted">The dashboard cannot reach the laptop backend (is app.py running?). Showing the last known values; it reconnects automatically.</span>
     </div>
 
-    <!-- Row 1: the four main status cards -->
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="card p-4 space-y-3">
-        <div class="label">Light</div>
-        <div id="light-badge" class="badge badge-off">OFF</div>
-        <div class="muted text-sm">Relay 1</div>
-      </div>
-      <div class="card p-4 space-y-3">
-        <div class="label">Fan</div>
-        <div id="fan-badge" class="badge badge-off">OFF</div>
-        <div class="muted text-sm">Relay 2</div>
-      </div>
-      <div class="card p-4 space-y-3">
-        <div class="label">Room</div>
-        <div id="room-badge" class="badge badge-off">Empty</div>
-        <div id="last-motion" class="muted text-sm">No motion yet</div>
-      </div>
-      <div class="card p-4 space-y-3">
-        <div class="label">ESP32</div>
-        <div id="esp-badge" class="badge badge-off">Waiting</div>
-        <div id="esp-seen" class="muted text-sm">&nbsp;</div>
+    <!-- 1. System health -->
+    <section class="block" aria-labelledby="h-health">
+      <h2 id="h-health" class="sr-only">System health</h2>
+      <div class="grid g-health">
+        <div class="card health"><div class="ico"><svg><use href="#i-chip"/></svg></div>
+          <div><div class="k">ESP32 controller</div><div id="h-esp" class="v">&ndash;</div></div></div>
+        <div class="card health"><div class="ico"><svg><use href="#i-wave"/></svg></div>
+          <div><div class="k">Last telemetry</div><div id="h-age" class="v tabular">&ndash;</div></div></div>
+        <div class="card health"><div class="ico"><svg><use href="#i-user"/></svg></div>
+          <div><div class="k">Room</div><div id="h-room" class="v">&ndash;</div></div></div>
+        <div class="card health"><div class="ico"><svg><use href="#i-server"/></svg></div>
+          <div><div class="k">Server (laptop)</div><div id="h-server" class="v">&ndash;</div></div></div>
       </div>
     </section>
 
-    <!-- Why the system decided this -->
-    <section class="card p-4 flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span class="label">Reason</span>
-      <span id="reason" class="text-lg">&nbsp;</span>
+    <!-- 2. Live control -->
+    <section class="block" aria-labelledby="h-live">
+      <div class="block-head">
+        <div><h2 id="h-live">Live control</h2>
+          <p>What the server last told the ESP32, and why. Decisions are made on the laptop.</p></div>
+      </div>
+      <div class="grid g-live">
+        <article id="light-card" class="card device unknown span-4" aria-labelledby="t-light">
+          <div class="device-top">
+            <div><h3 id="t-light" class="card-title">Light</h3><div id="light-state" class="device-state live">&ndash;</div></div>
+            <div class="device-icon"><svg><use href="#i-bulb"/></svg></div>
+          </div>
+          <div id="light-reason" class="reason live">&nbsp;</div>
+          <div class="meta"><span id="light-mode">&nbsp;</span><span id="light-confirm">&nbsp;</span></div>
+          <div class="stale-note">Last known value &ndash; server unreachable</div>
+        </article>
+
+        <article id="fan-card" class="card device unknown span-4" aria-labelledby="t-fan">
+          <div class="device-top">
+            <div><h3 id="t-fan" class="card-title">Fan</h3><div id="fan-state" class="device-state live">&ndash;</div></div>
+            <div class="device-icon"><svg><use href="#i-fan"/></svg></div>
+          </div>
+          <div id="fan-reason" class="reason live">&nbsp;</div>
+          <div class="meta"><span id="fan-mode">&nbsp;</span><span id="fan-confirm">&nbsp;</span></div>
+          <div class="stale-note">Last known value &ndash; server unreachable</div>
+        </article>
+
+        <article class="card span-4 full-md" aria-labelledby="t-override">
+          <h3 id="t-override" class="card-title"><svg><use href="#i-hand"/></svg>Watchman override</h3>
+          <button id="override-btn" class="override-btn" type="button" aria-describedby="override-help" disabled>
+            <span class="knob" aria-hidden="true"></span><span id="override-label">&ndash;</span>
+          </button>
+          <div id="override-mode" class="big-line" style="font-size:16px;margin-top:12px">&nbsp;</div>
+          <div id="override-help" class="sub-line" style="font-size:13px">&nbsp;</div>
+          <div id="override-feedback" class="feedback" role="status"></div>
+        </article>
+
+        <article class="card span-6" aria-labelledby="t-room">
+          <h3 id="t-room" class="card-title"><svg><use href="#i-user"/></svg>Room occupancy</h3>
+          <div id="room-state" class="big-line live">&ndash;</div>
+          <div id="room-sub" class="sub-line live">&nbsp;</div>
+          <div id="room-demo" class="sub-line" style="font-size:12px">&nbsp;</div>
+        </article>
+
+        <article class="card span-6" aria-labelledby="t-class">
+          <h3 id="t-class" class="card-title"><svg><use href="#i-cal"/></svg>Class</h3>
+          <div class="sub-line">Now</div>
+          <div id="class-now" class="big-line live">&ndash;</div>
+          <hr class="divider">
+          <div class="sub-line">Next</div>
+          <div id="class-next" class="sub-line live" style="color:var(--text);font-weight:600">&ndash;</div>
+        </article>
+      </div>
     </section>
 
-    <!-- Row 2: classes, energy, sensors -->
-    <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="card p-4 space-y-3">
-        <div class="label">Class now</div>
-        <div id="class-now-badge" class="badge badge-off">No class</div>
-        <div id="class-now" class="text-xl font-semibold">&nbsp;</div>
-        <div class="pt-2 border-t" style="border-color: var(--border);">
-          <div class="label mt-2">Next class</div>
-          <div id="class-next" class="text-2 mt-1">&nbsp;</div>
+    <!-- 3. Sensors -->
+    <section class="block" aria-labelledby="h-sensors">
+      <div class="block-head">
+        <div><h2 id="h-sensors">Sensors &amp; environment</h2>
+          <p>Latest ESP32 readings with the thresholds the server uses.</p></div>
+        <span id="sensor-time" class="muted tabular" style="font-size:13px">&nbsp;</span>
+      </div>
+      <div class="grid g-sensor">
+        <article class="card sensor" aria-labelledby="t-temp">
+          <h3 id="t-temp" class="card-title"><svg><use href="#i-temp"/></svg>Temperature</h3>
+          <div class="live"><span id="temp-v" class="value tabular">&ndash;</span><span class="unit">&deg;C</span></div>
+          <div class="scale" aria-hidden="true"><div id="temp-fill" class="fill"></div>
+            <div id="temp-m-off" class="mark warn"></div><div id="temp-m-on" class="mark"></div></div>
+          <div class="scale-labels" aria-hidden="true"><span id="temp-l-off"></span><span id="temp-l-on"></span></div>
+          <div id="temp-note" class="note">&nbsp;</div>
+        </article>
+        <article class="card sensor" aria-labelledby="t-hum">
+          <h3 id="t-hum" class="card-title"><svg><use href="#i-drop"/></svg>Humidity</h3>
+          <div class="live"><span id="hum-v" class="value tabular">&ndash;</span><span class="unit">%</span></div>
+          <div class="scale" aria-hidden="true"><div id="hum-fill" class="fill" style="background:#0EA5E9"></div></div>
+          <div class="scale-labels" aria-hidden="true"><span style="left:0;transform:none">0%</span><span style="left:100%;transform:translateX(-100%)">100%</span></div>
+          <div id="hum-note" class="note">&nbsp;</div>
+        </article>
+        <article class="card sensor" aria-labelledby="t-ldr">
+          <h3 id="t-ldr" class="card-title"><svg><use href="#i-sun"/></svg>Daylight (LDR)</h3>
+          <div class="live"><span id="ldr-v" class="value tabular">&ndash;</span><span class="unit">/ 4095</span></div>
+          <div class="scale" aria-hidden="true"><div id="ldr-fill" class="fill" style="background:#F59E0B"></div>
+            <div id="ldr-m-on" class="mark warn"></div><div id="ldr-m-off" class="mark"></div></div>
+          <div class="scale-labels" aria-hidden="true"><span id="ldr-l-on"></span><span id="ldr-l-off"></span></div>
+          <div id="ldr-note" class="note">&nbsp;</div>
+        </article>
+        <article class="card sensor" aria-labelledby="t-power">
+          <h3 id="t-power" class="card-title"><svg><use href="#i-bolt"/></svg>Power</h3>
+          <div class="live"><span id="power-v" class="value tabular">&ndash;</span><span class="unit">W</span></div>
+          <div id="power-note" class="note">&nbsp;</div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 4. Energy -->
+    <section class="block" aria-labelledby="h-energy">
+      <div class="block-head">
+        <div><h2 id="h-energy">Energy today</h2>
+          <p>Energy = power &times; time between readings (gaps over 2 min ignored).</p></div>
+      </div>
+      <div class="grid g-3">
+        <div class="card kpi"><div class="k">Energy today</div><div class="v tabular"><span id="kwh-today">&ndash;</span> <span class="unit muted" style="font-size:16px">kWh</span></div>
+          <div id="kwh-note" class="s">&nbsp;</div></div>
+        <div class="card kpi"><div class="k">Estimated cost today <span class="est">EST.</span></div><div class="v tabular"><span id="cost-today">&ndash;</span></div>
+          <div id="cost-note" class="s">&nbsp;</div></div>
+        <div class="card kpi"><div class="k">Power now</div><div class="v tabular"><span id="power-now">&ndash;</span> <span class="unit muted" style="font-size:16px">W</span></div>
+          <div id="power-now-note" class="s">&nbsp;</div></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="chart-head"><h3>Power &middot; last 5 minutes</h3><span class="muted">watts, updates every 2.5 s</span></div>
+        <div class="chart-box"><canvas id="power-chart" role="img" aria-label="Power in watts over the last 5 minutes"></canvas></div>
+        <details class="data"><summary>Show data</summary><div class="table-wrap"><table class="t tabular">
+          <thead><tr><th>Time</th><th>Power (W)</th></tr></thead><tbody id="power-table"></tbody></table></div></details>
+      </div>
+    </section>
+
+    <!-- 5. Analytics -->
+    <section class="block" id="analytics" aria-labelledby="h-an">
+      <div class="block-head">
+        <div><h2 id="h-an">Analytics</h2>
+          <p id="an-range-text">Loads when you open this section.</p></div>
+        <div class="toolbar">
+          <div class="seg" role="group" aria-label="Date range">
+            <button type="button" data-range="today" aria-pressed="true">Today</button>
+            <button type="button" data-range="7d" aria-pressed="false">7 days</button>
+            <button type="button" data-range="30d" aria-pressed="false">30 days</button>
+          </div>
+          <button id="an-refresh" class="btn" type="button"><svg><use href="#i-refresh"/></svg>Refresh</button>
         </div>
       </div>
+      <div id="an-empty" class="card empty" hidden>No data for this period yet. Analytics appear once the ESP32 has sent readings.</div>
+      <div id="an-body">
+        <div class="grid g-kpi">
+          <div class="card kpi"><div class="k">Energy used</div><div id="k-energy" class="v tabular">&ndash;</div><div id="k-energy-s" class="s">&nbsp;</div></div>
+          <div class="card kpi"><div class="k">Cost <span class="est">EST.</span></div><div id="k-cost" class="v tabular">&ndash;</div><div id="k-cost-s" class="s">&nbsp;</div></div>
+          <div class="card kpi"><div class="k">Saved vs college hours <span class="est">EST.</span></div><div id="k-saved" class="v tabular">&ndash;</div><div id="k-saved-s" class="s">&nbsp;</div></div>
+          <div class="card kpi"><div class="k">Occupied in class time</div><div id="k-occ" class="v tabular">&ndash;</div><div id="k-occ-s" class="s">&nbsp;</div></div>
+          <div class="card kpi"><div class="k">Data coverage</div><div id="k-up" class="v tabular">&ndash;</div><div id="k-up-s" class="s">&nbsp;</div></div>
+        </div>
 
-      <div class="card p-4 flex flex-col justify-between">
-        <div class="label">Energy today</div>
-        <div>
-          <span id="kwh" class="text-6xl font-bold">0.000</span>
-          <span class="text-2xl text-2 ml-1">kWh</span>
+        <div class="grid g-2" style="margin-top:16px">
+          <div class="card">
+            <div class="chart-head"><h3>Energy per day</h3><span id="c-energy-sub" class="muted">kWh</span></div>
+            <div class="chart-box"><canvas id="c-energy" role="img" aria-label="Energy per day in kWh"></canvas></div>
+            <div id="i-energy" class="insight" hidden></div>
+            <details class="data"><summary>Show data</summary><div class="table-wrap"><table class="t tabular">
+              <thead><tr><th>Day</th><th>kWh</th><th>Cost (est.)</th></tr></thead><tbody id="t-energy"></tbody></table></div></details>
+          </div>
+          <div class="card">
+            <div class="chart-head"><h3>Light on-time</h3><span id="c-light-sub" class="muted">minutes, inside vs outside class time</span></div>
+            <div class="chart-box"><canvas id="c-light" role="img" aria-label="Minutes the light was on, inside and outside class time"></canvas></div>
+            <div id="i-light" class="insight" hidden></div>
+            <details class="data"><summary>Show data</summary><div class="table-wrap"><table class="t tabular">
+              <thead><tr><th>Day</th><th>In class (min)</th><th>Outside class (min)</th></tr></thead><tbody id="t-light"></tbody></table></div></details>
+          </div>
         </div>
-        <div class="space-y-1">
-          <div class="text-2">Power now: <span id="power-now" class="font-semibold" style="color: var(--text);">0 W</span></div>
-          <div class="muted text-xs">Estimated from relay state (light 40 W + fan 60 W) until real sensors are wired.</div>
-        </div>
-      </div>
 
-      <div class="card p-4 space-y-3">
-        <div class="label">Sensors</div>
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div><div id="temp" class="text-2xl font-semibold">--</div><div class="muted text-xs">Temp &deg;C</div></div>
-          <div><div id="hum"  class="text-2xl font-semibold">--</div><div class="muted text-xs">Humidity %</div></div>
-          <div><div id="ldr"  class="text-2xl font-semibold">--</div><div class="muted text-xs">Light (LDR)</div></div>
+        <div class="grid g-2" style="margin-top:16px">
+          <div class="card">
+            <div class="chart-head"><h3>Temperature</h3><span id="c-temp-sub" class="muted">&deg;C, average and maximum</span></div>
+            <div class="chart-box sm"><canvas id="c-temp" role="img" aria-label="Temperature trend"></canvas></div>
+            <div id="i-temp" class="insight" hidden></div>
+            <details class="data"><summary>Show data</summary><div class="table-wrap"><table class="t tabular">
+              <thead><tr><th>Period</th><th>Min &deg;C</th><th>Avg &deg;C</th><th>Max &deg;C</th><th>Avg humidity %</th><th>Avg LDR</th></tr></thead><tbody id="t-env"></tbody></table></div></details>
+          </div>
+          <div class="card">
+            <div class="chart-head"><h3>Humidity</h3><span id="c-hum-sub" class="muted">%, average</span></div>
+            <div class="chart-box sm"><canvas id="c-hum" role="img" aria-label="Humidity trend"></canvas></div>
+          </div>
         </div>
-        <div id="settings" class="muted text-xs pt-2 border-t" style="border-color: var(--border);">&nbsp;</div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="chart-head"><h3>Motion by weekday and hour</h3><span id="c-heat-sub" class="muted">minutes with motion</span></div>
+          <div id="heatmap" class="heat" role="img" aria-label="Heatmap of motion minutes by weekday and hour"></div>
+          <div class="toolbar" style="margin-top:8px;font-size:12px"><span class="muted">less</span>
+            <span id="heat-legend" style="display:flex;gap:2px"></span><span class="muted">more</span></div>
+          <details class="data"><summary>Show data</summary><div class="table-wrap"><table class="t tabular">
+            <thead><tr><th>Day</th><th>Busiest hours (motion minutes)</th></tr></thead><tbody id="t-heat"></tbody></table></div></details>
+        </div>
+
+        <div class="grid g-3" style="margin-top:16px">
+          <div class="card">
+            <h3 class="card-title"><svg><use href="#i-user"/></svg>Classes</h3>
+            <div id="a-classes" class="sub-line" style="color:var(--text)">&ndash;</div>
+            <ul id="a-nomotion" class="sms-list"></ul>
+          </div>
+          <div class="card">
+            <h3 class="card-title"><svg><use href="#i-server"/></svg>Reliability</h3>
+            <div id="a-rel" class="sub-line" style="color:var(--text)">&ndash;</div>
+          </div>
+          <div class="card">
+            <h3 class="card-title"><svg><use href="#i-chart"/></svg>Decisions &amp; SMS</h3>
+            <div id="a-dec" class="sub-line" style="color:var(--text)">&ndash;</div>
+          </div>
+        </div>
+        <p id="an-assume" class="muted" style="font-size:12px;margin-top:12px">&nbsp;</p>
       </div>
     </section>
 
-    <!-- Row 3: live power chart -->
-    <section class="card p-4">
-      <div class="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-        <h2 class="font-semibold">Power, last 5 minutes (W)</h2>
-        <span class="muted text-xs">updates every 2.5 s</span>
+    <!-- 6. Timetable + 7. SMS -->
+    <section class="block grid g-2" aria-label="Timetable and SMS alerts" style="align-items:start">
+      <div class="card" aria-labelledby="h-tt">
+        <h2 id="h-tt" class="card-title"><svg><use href="#i-cal"/></svg>Today's timetable</h2>
+        <ul id="today-list" class="today-list"><li class="muted">Loading&hellip;</li></ul>
+        <details class="data" style="margin-top:16px"><summary>Whole week</summary>
+          <div class="table-wrap"><table class="t tabular week"><thead><tr><th>Day</th><th>Start</th><th>End</th><th>Subject</th></tr></thead>
+            <tbody id="week-table"></tbody></table></div>
+          <div id="week-cards" class="week-cards"></div>
+        </details>
       </div>
-      <div class="relative h-64"><canvas id="power-chart" aria-label="Power over the last 5 minutes"></canvas></div>
-      <details class="mt-3 text-sm">
-        <summary class="muted cursor-pointer">Show the latest readings as a table</summary>
-        <table class="mt-2 tabular">
-          <thead><tr class="muted"><th class="text-left pr-6 font-normal">Time</th><th class="text-right font-normal">Power (W)</th></tr></thead>
-          <tbody id="power-table"></tbody>
-        </table>
-      </details>
-    </section>
 
-    <!-- Row 4: timetable -->
-    <section class="card p-4">
-      <div class="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-        <h2 class="font-semibold">Timetable</h2>
-        <span class="muted text-xs">Lights may switch on 5 min before a class. Today is bold, the current class is highlighted.</span>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm tabular">
-          <thead>
-            <tr class="muted text-left">
-              <th class="py-2 pr-4 font-normal">Day</th>
-              <th class="py-2 pr-4 font-normal">Start</th>
-              <th class="py-2 pr-4 font-normal">End</th>
-              <th class="py-2 font-normal">Subject</th>
-            </tr>
-          </thead>
-          <tbody id="timetable"></tbody>
-        </table>
+      <div class="card" aria-labelledby="h-sms">
+        <h2 id="h-sms" class="card-title"><svg><use href="#i-msg"/></svg>SMS alerts</h2>
+        <p id="sms-rule" style="margin:0 0 8px">&ndash;</p>
+        <p id="sms-trial" class="sub-line" style="font-size:13px;margin:0 0 12px" hidden></p>
+        <div id="sms-last" class="sms-last"><div class="head"><span>No SMS sent yet</span></div></div>
+        <div class="toolbar" style="margin-top:12px">
+          <button id="sms-test" class="btn primary" type="button"><svg><use href="#i-msg"/></svg><span>Send test SMS</span></button>
+          <button id="sms-check" class="btn" type="button"><svg><use href="#i-refresh"/></svg>Check delivery</button>
+        </div>
+        <div id="sms-feedback" class="feedback" role="status" style="margin-top:8px"></div>
+        <details class="data"><summary>Last 10 messages</summary><ul id="sms-list" class="sms-list"></ul></details>
       </div>
     </section>
+  </main>
 
-    <footer class="muted text-xs text-center pb-4">
-      Data from the ESP32 every 2 s &middot; decisions made by the laptop backend
-    </footer>
-  </div>
+  <footer>Readings from the ESP32 every 2 s &middot; all decisions are made by the laptop server &middot;
+    last refresh <span id="last-refresh" class="tabular">&ndash;</span></footer>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
 </body>

@@ -34,6 +34,7 @@ All commands are run in PowerShell from `classroom-automation\backend`.
 | 8  | Fail-safe when Flask is stopped | [x] | 21-10-2026 | countdown, `entering FAIL-SAFE` after 25 s, light ON / fan OFF |
 | 9  | Recovery when Flask restarts | [x] | 21-10-2026 | `Backend is back` 2 s after restart, ON/ON again |
 | 10 | Relays OFF at boot / on Stop | [x] | 21-10-2026 | Ctrl+C → `Stopped - relays OFF`; reset → OFF through boot + Wi-Fi (7 s) until first command; LED followed |
+| 11 | Watchman ON/OFF switch on the dashboard | [ ] | | 26-10-2026: tested with fake ESP + browser (press → manual ON `until`, press again → automatic; during class press → manual OFF); **confirm LED on real board** |
 
 Notes from 21-10-2026:
 - Only one external LED (on one relay channel); the other channel was checked via the ESP32 log only.
@@ -129,3 +130,21 @@ A class that starts in 7 minutes should switch ON 5 minutes early, i.e. in about
 | 15-10-2026 | DHT11 always `read failed` in main.py | loose wire; works after reseating (24 °C / 61 %) |
 | 21-10-2026 | `ETIMEDOUT` to backend after laptop IP changed | updated SERVER_URL; Thonny had uploaded an old config.py tab |
 | 21-10-2026 | LDR reads ~0 most of the time | open - check wiring (AO not DO, divider to GND) |
+
+---
+
+## New features (fan by temperature, daylight, SMS) - bench checklist
+
+Before: Flask restarted, new `main.py` + `config.py` on the ESP32, dashboard open (Ctrl+F5),
+a TEST class running and motion (`tools\add_test_slot.py --minutes 30`, wave).
+
+| #  | Test | Done | Date | Result / notes |
+|----|------|------|------|----------------|
+| 12 | Fan ON when warm: warm the DHT11 with your hand / breath until >= 28 C | [ ] | | Fan card `fan on: 28.x C >= 28 C`, relay 2 clicks |
+| 13 | Fan stays ON at 27-28 C, OFF below 27 C (let it cool) | [ ] | | no chatter between 27 and 28 |
+| 14 | DHT11 unplugged (DATA wire out, power off first): fan keeps state ~15 s, then OFF | [ ] | | `fan off: no valid temperature reading ...` |
+| 15 | LDR direction: torch -> number up (or set `LDR_HIGHER_IS_BRIGHTER = False`) | [ ] | | values: dark ___ room ___ torch ___ |
+| 16 | Daylight: torch on the LDR -> light OFF `light off: enough daylight`, fan unchanged; torch away -> light back ON only below DAY_ON and not within 60 s | [ ] | | |
+| 17 | Test SMS over the **phone hotspot** (mobile data ON): press "Send test SMS" | [ ] | | phone receives SMS; card shows ✔ |
+| 18 | SMS failure: turn mobile data OFF, press "Send test SMS" | [ ] | | card shows ✖ `no connection ...`; light/fan still work |
+| 19 | 20-min alert: no class, press the Switch ON, wait 20 min | [ ] | | exactly one SMS; none again until the light was OFF |

@@ -1,16 +1,16 @@
 day,start,end,subject
-Mon,09:00,10:00,PLACEHOLDER Maths
-Mon,10:00,11:00,PLACEHOLDER Physics
-Mon,11:15,12:15,PLACEHOLDER IoT Lab
-Tue,09:00,10:00,PLACEHOLDER Chemistry
-Tue,10:00,11:00,PLACEHOLDER Maths
-Tue,14:00,15:00,PLACEHOLDER Electronics
-Wed,09:00,10:00,PLACEHOLDER Physics
-Wed,11:15,12:15,PLACEHOLDER IoT Lab
-Wed,14:00,15:00,PLACEHOLDER Maths
-Thu,10:00,11:00,PLACEHOLDER Electronics
-Thu,11:15,12:15,PLACEHOLDER Chemistry
-Thu,14:00,15:00,PLACEHOLDER Physics
-Fri,09:00,10:00,PLACEHOLDER Maths
-Fri,10:00,11:00,PLACEHOLDER IoT Lab
-Fri,14:00,15:00,PLACEHOLDER Electronics
+Mon,09:00,10:00,Maths
+Mon,10:00,11:00,Physics
+Mon,11:15,12:15,IoT Lab
+Tue,09:00,10:00,Chemistry
+Tue,10:00,11:00,Maths
+Tue,14:00,15:00,Electronics
+Wed,09:00,10:00,Physics
+Wed,11:15,12:15,IoT Lab
+Wed,14:00,15:00,Maths
+Thu,10:00,11:00,Electronics
+Thu,11:15,12:15,Chemistry
+Thu,14:00,15:00,Physics
+Fri,09:00,10:00,Maths
+Fri,10:00,11:00,IoT Lab
+Fri,14:00,15:00,Electronics

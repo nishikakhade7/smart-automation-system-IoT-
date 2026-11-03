@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+
+# SMS alert settings (API keys, phone number) - never commit this
+backend/alert_config.json
